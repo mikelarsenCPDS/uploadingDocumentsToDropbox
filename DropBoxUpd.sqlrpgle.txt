@@ -1,0 +1,307 @@
+**FREE
+ctl-opt option (*srcstmt : *nodebugio : *nounref);
+ctl-opt debug (*input);
+ctl-opt dftactgrp (*no);
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//  Program : DropboxUpd
+//  Author  : Mike Larsen
+//  Date Written: 02/22/2020
+//  Purpose : This program will consume a Dropbox web service to
+//            upload files from the Ifs.
+//
+// Documentation for the Dropbox upload API can be found here:
+//
+// https://www.dropbox.com/developers/documentation/http/documentation#files
+//       -upload
+//
+//====================================================================*
+//   Date    Programmer  Description                                  *
+//--------------------------------------------------------------------*
+// 02/22/20  M.Larsen    Original code.                               *
+//                                                                    *
+//- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *
+
+// - - - -
+// Workfields
+
+dcl-s WebServiceUrl     varchar(1024) inz;
+dcl-s WebServiceHeader  varchar(1024) ccsid(*utf8) inz;      // unicode
+dcl-s WebServiceBody    sqltype(blob:16000000);              // ~16mb
+dcl-s documentToUpload  char(5) inz;
+dcl-s CmdStr            char(1000);
+dcl-s quote             char(6) inz('&quot;');
+dcl-s dropboxReturnJson sqltype(blob:16000000);
+dcl-s accessToken       char(200) inz;
+
+// for the parameters required by Dropbox
+
+dcl-s mode            char(3) inz('add');
+dcl-s autorename      char(4) inz('true');
+dcl-s mute            char(5) inz('false');
+dcl-s strict_conflict char(5) inz('false');
+
+// Dropbox file info - these will be uploaded from the Ifs to Dropbox
+
+dcl-s DropboxDocumentName char(150) inz;
+dcl-s DropboxCsvDocument  char(150) inz;
+dcl-s DropboxPdfDocument  char(150) inz;
+dcl-s DropboxWordDocument char(150) inz;
+dcl-s DropboxJpeg         char(150) inz;
+
+// Ifs file info
+
+dcl-s ifsDirectory    char(25) inz('/home/MLARSEN/Dropbox');
+dcl-s fullIfsPath     char(200);
+
+dcl-s ifsDocumentName char(150) inz;
+dcl-s ifsCsvDocument  char(150) inz;
+dcl-s ifsPdfDocument  char(150) inz;
+dcl-s ifsWordDocument char(150) inz;
+dcl-s ifsJpeg         char(150) inz;
+
+dcl-s File_In Sqltype(Blob_file);
+
+// - - - - - - -
+
+// The SQLTYPE(BLOB_FILE) definition will be converted by the compiler
+// into the following data structure:
+
+// DCL-DS FILE_IN;
+//   FILE_IN_NL UNS(10);               // length of the value from File_In_NAME
+//   FILE_IN_DL UNS(10);               // data length
+//   FILE_IN_FO UNS(10);               // type of file open
+//   FILE_IN_NAME CHAR(255) CCSID(*JOBRUNMIX); // IFS file I'm uploading
+// END-DS FILE_IN;
+
+dcl-ds jsonData            qualified;
+       jsonName            varchar(50);
+       jsonPath_lower      varchar(50);
+       jsonPath_display    varchar(50);
+       jsonId              varchar(50);
+       jsonClient_modified varchar(20);
+       jsonServer_modified varchar(20);
+       jsonRev             varchar(50);
+       jsonSize            zoned(10:0);
+       jsonIs_downloadable varchar(5);
+       jsonContent_hash    varchar(75);
+end-ds;
+
+// - - - -
+// Run CL Command
+
+dcl-pr Run     ExtPgm('QCMDEXC');
+       CmdStr  Char(3000) Options(*VarSize);
+       CmdLen  Packed(15:5) Const;
+       CmdDbcs Char(2) Const Options(*Nopass);
+End-pr;
+
+//--------------------------------------------------------
+
+// manually set this for now, but it would be a parm coming in to the program
+
+//documentToUpload = 'word';
+//documentToUpload = 'csv';
+//documentToUpload = 'pdf';
+documentToUpload = 'jpeg';
+
+setup();
+getToken();
+setupDropboxDocumentVariables();
+setupIfsDocumentVariables();
+
+Select;
+  When %trim(documentToUpload) = 'csv';
+       DropboxDocumentName = DropboxCsvDocument;
+       ifsDocumentName     = ifsCsvDocument;
+
+  When %trim(documentToUpload) = 'pdf';
+       DropboxDocumentName = DropboxPdfDocument;
+       ifsDocumentName     = ifsPdfDocument;
+
+  When %trim(documentToUpload) = 'word';
+       DropboxDocumentName = DropboxWordDocument;
+       ifsDocumentName     = ifsWordDocument;
+
+  When %trim(documentToUpload) = 'jpeg';
+       DropboxDocumentName = DropboxJpeg;
+       ifsDocumentName     = ifsJpeg;
+Endsl;
+
+setupWebServiceVariables(DropboxDocumentName);
+getDocumentFromIfs();
+consumeWs();
+parseResponse();
+
+*Inlr = *On;
+Return;
+
+//--------------------------------------------------------
+// setup subprocedure
+//--------------------------------------------------------
+
+dcl-proc setup;
+
+  // - - - -
+  // change job's ccsid to 37
+
+  CmdStr = 'CHGJOB CCSID(37)';
+
+  Callp Run(Cmdstr:%Size(CmdStr));
+
+end-proc setup;
+
+//--------------------------------------------------------
+// getToken subprocedure
+//--------------------------------------------------------
+
+dcl-proc getToken;
+
+  accessToken =
+   'YOUR_ACCESS_TOKEN_HERE';
+
+end-proc getToken;
+
+//--------------------------------------------------------
+// setupDropboxDocumentVariables subprocedure
+//--------------------------------------------------------
+
+dcl-proc setupDropboxDocumentVariables;
+
+  DropboxCsvDocument  = '/Apps/Mike Larsen test app/SalesJan2009.csv';
+  DropboxPdfDocument  = '/Apps/Mike Larsen test app/ASamplePDF.pdf';
+  DropboxWordDocument = '/Apps/Mike Larsen test app/testWordDoc.docx';
+  DropboxJpeg         = '/Apps/Mike Larsen test app/lexie.jpg';
+
+end-proc setupDropboxDocumentVariables;
+
+//--------------------------------------------------------
+// setupIfsDocumentVariables subprocedure
+//--------------------------------------------------------
+
+dcl-proc setupIfsDocumentVariables;
+
+  ifsCsvDocument  = 'SalesJan2009.csv';
+  ifsPdfDocument  = 'ASamplePDF.pdf';
+  ifsWordDocument = 'testWordDoc.docx';
+  ifsJpeg         = 'lexie.jpg';
+
+end-proc setupIfsDocumentVariables;
+
+//--------------------------------------------------------
+// setupWebServiceVariables subprocedure
+//--------------------------------------------------------
+
+dcl-proc setupWebServiceVariables;
+
+  dcl-pi *N;
+    inDocumentName char(150);
+  end-pi;
+
+  WebServiceHeader =
+
+    '<httpHeader> ' +
+    '<header name="Authorization" ' +
+            'value="Bearer ' + %trim(accessToken) +  '"/> ' +
+
+    '<header name="Content-Type" +
+             value="application/octet-stream"/> ' +
+
+    '<header name="Dropbox-API-Arg" ' +
+            'value="{' +
+              quote + 'path' + quote + ':' + quote +
+                     %trim(DropboxDocumentName) + quote + ',' +
+
+              quote + 'mode' + quote + ':' + quote +
+                     %trim(mode) + quote + ',' +
+
+              quote + 'autorename' + quote + ':' +
+                     %trim(autorename) + ',' +
+
+              quote + 'mute' + quote + ':' +
+                     %trim(mute) + ',' +
+
+              quote + 'strict_conflict' + quote + ':' +
+                     %trim(strict_conflict) +
+
+                       '}"/> ' +
+
+    '</httpHeader>';
+
+  WebServiceUrl = 'https://content.dropboxapi.com/2/files/upload';
+
+end-proc setupWebServiceVariables;
+
+//--------------------------------------------------------
+// consumeWs subprocedure
+//--------------------------------------------------------
+
+dcl-proc consumeWs;
+
+  // Note: you need to use 'HttpPostBlob'. 'HttpPostClob' won't work as
+  //       Dropbox wants binary data.
+
+  Exec sql
+    Select
+      Systools.HttpPostBlob(:WebServiceUrl, :WebServiceHeader, :WebServiceBody)
+      into :dropboxReturnJson
+      from sysibm.sysdummy1;
+
+end-proc consumeWs;
+
+//--------------------------------------------------------
+// parseResponse subprocedure
+//--------------------------------------------------------
+
+dcl-proc parseResponse;
+
+  // the response from Dropbox comes back as Json.  Parse it out using
+  // the JsonTable function.
+
+  Exec Sql
+    Select * into :jsonData from Json_table
+      (:dropboxReturnJson,
+
+        '$'
+        Columns
+          (name            VarChar(50) Path 'lax $.name',
+           path_lower      VarChar(50) Path 'lax $.path_lower',
+           path_display    Varchar(50) Path 'lax $.path_display',
+           id              VarChar(50) Path 'lax $.id',
+           client_modified VarChar(20) Path 'lax $.client_modified',
+           server_modified Varchar(20) Path 'lax $.server_modified',
+           rev             Varchar(50) Path 'lax $.rev',
+           fileSize        int         Path 'lax $.size',
+           is_downloadable Varchar(5)  Path 'lax $.is_downloadable',
+           content_hash    Varchar(75) Path 'lax $.content_hash'
+          )
+
+      ) as x;
+
+end-proc parseResponse;
+
+//--------------------------------------------------------
+// getDocumentFromIfs subprocedure
+//--------------------------------------------------------
+
+dcl-proc getDocumentFromIfs;
+
+  fullIfsPath = %Trim(ifsDirectory) + '/' + %Trim(ifsDocumentName);
+
+  // set up output parameters.  we'll be taking a document from the IFS and
+  // and loading it into a Blob variable.
+
+  File_In_fo   = Sqfrd;
+  File_In_name = %trim(fullIfsPath);
+  File_In_nl   = %Len(%trimR(File_In_name));
+
+  // Populate the 'WebServiceBody' Blob variable from the Ifs Blob variable
+  // 'File_In'.
+
+  Exec sql
+    Select :File_In
+     Into :WebServiceBody
+     from sysibm.sysdummy1;
+
+end-proc getDocumentFromIfs;
+
+//- - - - - - - - - - - - - - 
